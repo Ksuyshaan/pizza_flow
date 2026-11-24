@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PizzaFlow</title>
+    <meta name="description" content="PizzaFlow: управление заказами, кухней, складом, доставкой, промокодами и отчётами.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ============ AUTH SCREEN ============ -->
+<div id="auth-screen" class="auth-screen" hidden>
+    <div class="auth-card">
+        <div class="auth-brand">
+            <span class="brand-mark">🍕</span>
+            <div>
+                <div class="brand-title">PizzaFlow</div>
+                <div class="muted small">Ресторан и доставка</div>
+            </div>
+        </div>
+
+        <div class="seg" role="tablist">
+            <button class="seg-btn active" data-auth-tab="login" type="button">Вход</button>
+            <button class="seg-btn" data-auth-tab="register" type="button">Регистрация</button>
+        </div>
+
+        <form id="login-form" class="stack">
+            <label class="field"><span>Email</span>
+                <input class="input" type="email" name="email" required autocomplete="username" placeholder="you@example.com">
+            </label>
+            <label class="field"><span>Пароль</span>
+                <input class="input" type="password" name="password" required autocomplete="current-password">
+            </label>
+            <button class="btn btn-primary btn-block" type="submit">Войти</button>
+        </form>
+
+        <form id="register-form" class="stack" hidden>
+            <label class="field"><span>Имя и фамилия</span>
+                <input class="input" name="fullName" required>
+            </label>
+            <label class="field"><span>Email</span>
+                <input class="input" type="email" name="email" required autocomplete="username">
+            </label>
+            <label class="field"><span>Телефон</span>
+                <input class="input" name="phone" placeholder="+7-900-000-0000">
+            </label>
+            <label class="field"><span>Пароль (не менее 6 символов)</span>
+                <input class="input" type="password" name="password" required minlength="6" autocomplete="new-password">
+            </label>
+            <label class="field"><span>Роль</span>
+                <select class="input" name="role">
+                    <option value="CUSTOMER">Клиент</option>
+                    <option value="COOK">Повар</option>
+                    <option value="COURIER">Курьер</option>
+                    <option value="MANAGER">Менеджер</option>
+                    <option value="ADMIN">Администратор</option>
+                </select>
+            </label>
+            <button class="btn btn-primary btn-block" type="submit">Создать аккаунт</button>
+        </form>
+
+        <div class="demo-block">
+            <div class="muted small">Демо-аккаунты (пароль <code>password123</code>):</div>
+            <div class="demo-grid" id="demo-accounts"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ APP SHELL ============ -->
+<div id="app-shell" class="shell" hidden>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-brand">
+            <span class="brand-mark">🍕</span>
+            <span class="brand-title">PizzaFlow</span>
+        </div>
+        <nav class="nav" id="nav"></nav>
+        <div class="sidebar-foot">
+            <button class="user-chip" id="user-chip" type="button" title="Профиль">
+                <span class="avatar" id="user-avatar">?</span>
+                <span class="user-meta">
+                    <span class="user-name" id="user-name"></span>
+                    <span class="user-role" id="user-role"></span>
+                </span>
+            </button>
+            <button class="btn btn-ghost btn-sm btn-block" id="logout-btn" type="button">Выйти</button>
+        </div>
+    </aside>
+
+    <div class="main">
+        <header class="topbar">
+            <button class="icon-btn only-mobile" id="menu-toggle" type="button" aria-label="Меню">☰</button>
+            <h1 class="page-title" id="page-title"></h1>
+            <div class="topbar-actions">
+                <div class="load-pill" id="load-pill" title="Нагрузка кухни">
+                    <span class="dot"></span><span id="load-text">—</span>
+                </div>
+                <button class="cart-btn" id="cart-btn" type="button">
+                    🛒 <span id="cart-count">0</span>
+                    <span class="cart-sum" id="cart-sum">0 ₽</span>
+                </button>
+            </div>
+        </header>
+        <main class="content" id="view"></main>
+    </div>
+</div>
+
+<!-- Cart drawer -->
+<div class="drawer-backdrop" id="cart-backdrop" hidden>
+    <aside class="drawer" id="cart-drawer" role="dialog" aria-label="Корзина"></aside>
+</div>
+
+<!-- Generic modal -->
+<div class="modal-backdrop" id="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-head">
+            <h3 id="modal-title"></h3>
+            <button class="icon-btn" id="modal-close" type="button" aria-label="Закрыть">✕</button>
+        </div>
+        <div class="modal-body" id="modal-body"></div>
+    </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -1,151 +1,109 @@
-# Контракт между модулями
+# API Контракт и межмодульные интерфейсы PizzaFlow
 
-Только сигнатуры и правила. Тела методов пишет владелец модуля. Приложение на JavaFX + Spring Boot: экраны вызывают сервисы напрямую, HTTP нет.
+## 1. Межмодульные сервисные интерфейсы (Java Contracts)
 
-## 1. Кто за что отвечает
-
-| | Модуль / пакет | Экраны | Сервисы |
-|---|---|---|---|
-| **П1 Ксюша** | `orders`, `auth`, `customers`, `export` | Авторизация, Заказы, Новый заказ, Клиент | `AuthService`, `OrderService`, `PromoService`, `ExportService` (Apache POI) |
-| **П2 Алина** | `menu`, `kitchen`, база данных | Меню, Кухня | `MenuService`, `KitchenService`, `InventoryService` |
-| **П3 Алия** | `delivery`, `reports`, `common` | Dashboard, Курьеры, Доставка, Отчёты | `DeliveryService`, `CourierService`, `DashboardService`, `ReportService`, `AuditLogger` |
-
-Дополнительно: Алина ведёт настройки БД и тестовые данные (пользователь на каждую роль, меню, зоны, курьеры), Алия отвечает за исключения, Log4j 2 и тесты, Ксюша за главное окно с меню по ролям.
-
-## 2. Правила
-
-1. Статус заказа меняется **только** через `OrderService.changeStatus`.
-2. Чужие репозитории не вызываем. Нужны данные соседа, вызываем его сервис.
-3. Между модулями передаём DTO (`XxxResponse`), а не сущности. Исключение: `@ManyToOne` на `Order` из `KitchenOrder` и `Delivery` разрешён (внешний ключ в БД и удобные запросы), но менять `Order` можно только через `OrderService`.
-4. Соседи реагируют на смену статуса через событие, а не вызываются из `OrderService` (так нет циклических зависимостей).
-5. Ошибки бизнес-логики это исключения из `common.exception`; интерфейс показывает их в Alert.
-
-## 3. Общие типы (пакет `common`, владелец Алия, нужны в первый день)
+В рамках монолита модули взаимодействуют через сервисные интерфейсы без прямого доступа к чужим JPA-репозиториям:
 
 ```java
-public record Actor(Long userId, Role role) {}
-public enum Role { ADMIN, MANAGER, COOK, COURIER, CUSTOMER }
-public enum OrderStatus { NEW, CONFIRMED, COOKING, READY, DELIVERING, COMPLETED, CANCELLED }
-public enum OrderType { DELIVERY, PICKUP }
-public enum PaymentMethod { CASH, CARD }
+// Модуль 1: Заказы (П1)
+package com.pizzaflow.order.service;
 
-public class BusinessException extends RuntimeException {}               // базовый, сообщение на русском
-public class OrderNotFoundException extends BusinessException {}
-public class InvalidStatusTransitionException extends BusinessException {}
-public class ForbiddenActionException extends BusinessException {}
-public class MenuItemUnavailableException extends BusinessException {}
-public class InsufficientStockException extends BusinessException {}     // Алина
-
-public interface AuditLogger {
-    void log(Actor actor, String action, String details);                // в audit.log (Log4j 2)
-}
-```
-
-Один хелпер `AlertUtil.showError(Throwable)` (Алия) показывает `BusinessException` как есть, остальные ошибки как «Что-то пошло не так» плюс запись в `error.log`.
-
-## 4. Событие смены статуса
-
-Публикует `OrderService.changeStatus` в конце той же транзакции (`@EventListener`, не `@TransactionalEventListener`): ошибка слушателя откатывает смену статуса.
-
-```java
-public record OrderStatusChangedEvent(
-        Long orderId, OrderStatus from, OrderStatus to, OrderType type, Actor actor, Instant at) {}
-```
-
-Слушатели:
-
-- **Алина:** `to == CONFIRMED` создаёт `KitchenOrder`; `COOKING` списывает ингредиенты и записывает повара; `READY` записывает `finishedAt`; `CANCELLED` убирает из очереди.
-- **Алия:** `READY` и `type == DELIVERY` создаёт `Delivery` и назначает курьера; `DELIVERING` и `COMPLETED` обновляют статус доставки.
-
-Из-за этого кухонный экран тоже вызывает просто `OrderService.changeStatus(id, COOKING, actor)`, а экран курьера `changeStatus(id, DELIVERING, actor)`. Отдельных «start» и «complete» у соседей нет.
-
-## 5. Интерфейсы
-
-### П1 Ксюша
-
-```java
 public interface OrderService {
-    OrderResponse createOrder(CreateOrderRequest request, Actor actor);   // считает суммы, пишет StatusHistory (null → NEW)
-    OrderResponse changeStatus(Long orderId, OrderStatus newStatus, Actor actor);
-    OrderResponse getOrder(Long orderId);
-    Page<OrderResponse> search(OrderFilter filter, Pageable pageable);    // для таблицы заказов, кухни, доставки
-
-    // Для Алии: dashboard и отчёты
-    OrderStats getStats(Instant from, Instant to);
-    List<OrderReportView> findOrdersForReport(Instant from, Instant to, Set<OrderStatus> statuses);
-    OrderReportView getOrderForReport(Long orderId);
+    // Единственная точка смены статуса и записи в StatusHistory
+    OrderResponse changeStatus(Long orderId, OrderStatus newStatus, String actorUsername, UserRole actorRole, String comment);
+    
+    // Получение данных для смежных модулей и отчётов
+    OrderDto getOrderById(Long orderId);
+    List<OrderReportDto> getOrdersForPeriod(Instant from, Instant to);
 }
 
-public record CreateOrderRequest(Long customerId, OrderType orderType, PaymentMethod paymentMethod,
-        List<OrderItemRequest> items, String promoCode, String deliveryAddress, Long deliveryZoneId) {}
-public record OrderItemRequest(Long menuItemId, int quantity) {}
-
-public record OrderStats(long ordersCount, BigDecimal revenue, BigDecimal averageCheck,
-        Map<OrderStatus, Long> byStatus, List<DayRevenue> revenueByDay) {}
-public record DayRevenue(LocalDate day, BigDecimal revenue) {}
-
-public interface ExportService {                                          // Apache POI
-    void exportSalesXlsx(List<OrderReportView> orders, Path target);
-    void exportShiftDocx(ShiftReport report, Path target);
-    void exportOrderDocx(OrderReportView order, Path target);
-}
-```
-
-`OrderReportView` и `ShiftReport` это DTO для отчётов: номер, дата, тип, статус, клиент, позиции, суммы, курьер (для смены: период, число заказов, выручка, отмены). Поля Ксюша и Алия уточняют друг с другом при реализации.
-
-**Определения метрик** (чтобы цифры на Dashboard и в отчётах совпадали):
-- Выручка = сумма `totalAmount` заказов в статусе `COMPLETED` за период (по `completedAt`).
-- Заказов за период = все заказы, кроме `CANCELLED` (по `createdAt`).
-- Средний чек = выручка / число `COMPLETED`.
-
-### П2 Алина
-
-```java
-public interface MenuService {
-    MenuItemResponse getItem(Long id);                                    // цена и доступность
-    List<MenuItemResponse> getItems(Collection<Long> ids);
-    List<MenuItemResponse> getAvailableItems();                           // для экрана «Новый заказ»
-}
+// Модуль 2: Кухня и склад (П2)
+package com.pizzaflow.kitchen.service;
 
 public interface KitchenService {
-    KitchenOrderResponse createKitchenOrder(Long orderId);                // вызывается слушателем события
-    void cancelKitchenOrder(Long orderId);                                // вызывается слушателем события
-    KitchenQueue getQueue();                                              // колонки: новые, готовятся, готовы
+    KitchenOrderResponse createKitchenOrder(Long orderId);
+    KitchenOrderResponse startCooking(Long kitchenOrderId, String cookUsername);
+    KitchenOrderResponse completeCooking(Long kitchenOrderId);
+    KitchenLoadResponse getKitchenLoad();
 }
-```
 
-### П3 Алия
+// Модуль 3: Доставка и оплата (П3)
+package com.pizzaflow.delivery.service;
 
-```java
 public interface DeliveryService {
-    DeliveryResponse createDelivery(Long orderId);                        // вызывается слушателем события, назначает курьера
-    List<DeliveryZoneResponse> getZones();                                // для экрана «Новый заказ»
-    BigDecimal getDeliveryFee(Long zoneId);                               // нужно OrderService при расчёте суммы
+    DeliveryResponse createDelivery(Long orderId);
+    DeliveryResponse autoAssignCourier(Long deliveryId);
+    DeliveryResponse manualAssignCourier(Long deliveryId, Long courierId);
+    DeliveryResponse pickupDelivery(Long deliveryId, String courierUsername);
+    DeliveryResponse completeDelivery(Long deliveryId, String courierUsername);
 }
 ```
 
-`CourierService`, `DashboardService`, `ReportService` используются только экранами Алии. `ReportService` собирает данные через `OrderService.findOrdersForReport` и передаёт их в `ExportService` Ксюши.
+---
 
-## 6. Кто кого вызывает
+## 2. Каталог REST Endpoints
 
-```
-Экраны (все)        → OrderService.changeStatus / search / getOrder
-OrderService        → MenuService.getItems, DeliveryService.getDeliveryFee, PromoService
-Алина (слушатель)   ← OrderStatusChangedEvent
-Алия (слушатель)    ← OrderStatusChangedEvent
-Алия                → OrderService.getStats / findOrdersForReport, ExportService
-```
+Все пути имеют префикс `/api/v1`.
 
-Больше никаких перекрёстных вызовов.
+### Модуль 1: Авторизация, клиенты и заказы (Участник 1)
 
-## 7. С чего начать (первый день после встречи)
+| Метод | Путь | Роли | Описание | Request Body | Response Body |
+|---|---|---|---|---|---|
+| `POST` | `/auth/register` | ALL | Регистрация клиента | `RegisterRequest` | `AuthResponse (JWT, User)` |
+| `POST` | `/auth/login` | ALL | Вход в систему | `LoginRequest` | `AuthResponse (JWT, User)` |
+| `GET` | `/auth/me` | AUTH | Получение текущего профиля | - | `UserResponse` |
+| `GET` | `/addresses` | CUSTOMER, ADMIN | Список адресов пользователя | - | `List<AddressResponse>` |
+| `POST` | `/addresses` | CUSTOMER, ADMIN | Добавление адреса | `CreateAddressRequest` | `AddressResponse` |
+| `DELETE` | `/addresses/{id}` | CUSTOMER, ADMIN | Удаление адреса | - | `204 No Content` |
+| `POST` | `/orders` | CUSTOMER, ADMIN | Создание заказа (корзина, адрес, промо) | `CreateOrderRequest` | `OrderResponse` |
+| `GET` | `/orders` | ALL (фильтр по роли) | Список заказов (клиент видит свои, менеджер все) | Query: `status, page, size` | `PageResponse<OrderResponse>` |
+| `GET` | `/orders/{id}` | AUTH | Детализация заказа с позициями | - | `OrderResponse` |
+| `POST` | `/orders/{id}/confirm` | MANAGER, ADMIN | Подтверждение заказа менеджером | - | `OrderResponse` |
+| `POST` | `/orders/{id}/cancel` | CUSTOMER, MANAGER, ADMIN | Отмена заказа (до COOKING) | `CancelOrderRequest` | `OrderResponse` |
+| `GET` | `/orders/{id}/history` | AUTH | История переходов статусов | - | `List<StatusHistoryResponse>` |
+| `POST` | `/promocodes/validate` | AUTH | Предварительная проверка промокода | `ValidatePromoRequest` | `PromoValidationResponse` |
+| `GET` | `/promocodes` | MANAGER, ADMIN | Список всех промокодов | - | `List<PromoCodeResponse>` |
+| `POST` | `/promocodes` | MANAGER, ADMIN | Создание нового промокода | `CreatePromoCodeRequest` | `PromoCodeResponse` |
 
-Каждый коммитит в `develop` интерфейсы с заглушками, возвращающими тестовые данные, чтобы остальные сразу могли компилироваться и работать:
+---
 
-1. **Алия:** пакет `common` (исключения, `Actor`, `Role`, enum'ы, `AuditLogger`, настройка Log4j 2).
-2. **Ксюша:** сущности `Order`, `OrderItem`, `StatusHistory`, `OrderService` со всеми методами (рабочий `changeStatus`, остальное заглушки), событие.
-3. **Алина:** подключение к БД, тестовые данные, `MenuService` и `KitchenService` с заглушками, слушатель события.
+### Модуль 2: Меню, кухня и склад (Участник 2)
 
-## 8. Главное окно
+| Метод | Путь | Роли | Описание | Request Body | Response Body |
+|---|---|---|---|---|---|
+| `GET` | `/categories` | ALL | Список активных категорий меню | - | `List<CategoryResponse>` |
+| `POST` | `/categories` | MANAGER, ADMIN | Создание категории | `CategoryRequest` | `CategoryResponse` |
+| `GET` | `/products` | ALL | Каталог продуктов с фильтром по цене и категории | Query: `categoryId, search, page, size` | `PageResponse<ProductResponse>` |
+| `GET` | `/products/{id}` | ALL | Детали продукта с составом | - | `ProductResponse` |
+| `POST` | `/products` | MANAGER, ADMIN | Создание продукта с рецептом | `CreateProductRequest` | `ProductResponse` |
+| `PUT` | `/products/{id}` | MANAGER, ADMIN | Обновление продукта | `UpdateProductRequest` | `ProductResponse` |
+| `GET` | `/kitchen/orders` | COOK, MANAGER, ADMIN | Очередь нарядов на кухне | Query: `status` | `List<KitchenOrderResponse>` |
+| `POST` | `/kitchen/orders/{id}/start` | COOK, MANAGER, ADMIN | Начать готовку (списание остатков) | - | `KitchenOrderResponse` |
+| `POST` | `/kitchen/orders/{id}/complete`| COOK, MANAGER, ADMIN | Завершить готовку | - | `KitchenOrderResponse` |
+| `GET` | `/kitchen/load` | ALL | Расчет загрузки кухни и ожидаемого времени | - | `KitchenLoadResponse` |
+| `GET` | `/inventory/ingredients` | COOK, MANAGER, ADMIN | Список сырья и остатков | - | `List<IngredientResponse>` |
+| `GET` | `/inventory/low-stock` | MANAGER, ADMIN | Оповещение об остатках ниже порога | - | `List<IngredientResponse>` |
+| `POST` | `/inventory/movements` | MANAGER, ADMIN | Складская операция (приход/списание/корректировка) | `StockMovementRequest` | `StockMovementResponse` |
+| `GET` | `/inventory/movements` | MANAGER, ADMIN | Журнал складских проводок | Query: `ingredientId, type` | `List<StockMovementResponse>` |
 
-Каркас с боковым меню и показом пунктов по роли делает Ксюша (она же ведёт авторизацию). Каждый владелец экрана добавляет свой экран (FXML + контроллер) и регистрирует его одной строкой в списке экранов с нужными ролями.
+---
+
+### Модуль 3: Доставка, курьеры, оплата и отчёты (Участник 3)
+
+| Метод | Путь | Роли | Описание | Request Body | Response Body |
+|---|---|---|---|---|---|
+| `GET` | `/delivery-zones` | ALL | Список тарифных зон доставки | - | `List<DeliveryZoneResponse>` |
+| `POST` | `/delivery-zones` | MANAGER, ADMIN | Создание/обновление зоны | `DeliveryZoneRequest` | `DeliveryZoneResponse` |
+| `GET` | `/couriers` | MANAGER, ADMIN | Список всех курьеров со статусами | - | `List<CourierResponse>` |
+| `GET` | `/couriers/available` | MANAGER, ADMIN | Очередь свободных курьеров (FIFO) | - | `List<CourierResponse>` |
+| `GET` | `/deliveries` | COURIER, MANAGER, ADMIN | Список доставок (курьер видит свои, менеджер все) | Query: `status` | `List<DeliveryResponse>` |
+| `POST` | `/deliveries/{id}/assign` | MANAGER, ADMIN | Ручное назначение курьера | `AssignCourierRequest` | `DeliveryResponse` |
+| `POST` | `/deliveries/{id}/pickup` | COURIER, MANAGER, ADMIN | Взятие заказа на доставку курьером | - | `DeliveryResponse` |
+| `POST` | `/deliveries/{id}/complete` | COURIER, MANAGER, ADMIN | Завершение доставки (вручение) | - | `DeliveryResponse` |
+| `POST` | `/orders/{id}/complete-pickup`| MANAGER, ADMIN | Завершение заказа самовывоза | - | `OrderResponse` |
+| `GET` | `/payments/order/{orderId}` | AUTH | Просмотр статуса оплаты заказа | - | `PaymentResponse` |
+| `POST` | `/payments/{id}/refund` | MANAGER, ADMIN | Возврат денежных средств | `RefundRequest` | `PaymentResponse` |
+| `GET` | `/reports/revenue` | MANAGER, ADMIN | Метрики выручки за выбранный период | Query: `startDate, endDate` | `RevenueReportResponse` |
+| `GET` | `/reports/sales/excel` | MANAGER, ADMIN | Скачивание отчёта по продажам в Excel (.xlsx) | Query: `startDate, endDate` | `Binary (.xlsx)` |
+| `GET` | `/reports/shift/word` | MANAGER, ADMIN | Скачивание сводного отчёта смены в Word (.docx) | Query: `date` | `Binary (.docx)` |
+| `GET` | `/audit/logs` | MANAGER, ADMIN | Просмотр системных событий аудита | - | `List<AuditLogResponse>` |

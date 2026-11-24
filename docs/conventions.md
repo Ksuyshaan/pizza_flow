@@ -1,92 +1,58 @@
-# Соглашения проекта PizzaFlow
+# Соглашения по разработке и стандарты кода (Conventions)
 
-Решаем один раз для всех. Изменения вносим через pull request с согласия команды.
+## 1. Типы данных и доменные правила
+- **Идентификаторы (ID)**: строго `Long` (`bigint` в базе данных) с автоинкрементом (`GenerationType.IDENTITY`).
+- **Денежные суммы и цены**: строго `BigDecimal` с округлением до 2 знаков после запятой (`RoundingMode.HALF_UP`). Запрещено использовать `double` и `float`.
+- **Временные метки**: строго `java.time.Instant` (`TIMESTAMP WITH TIME ZONE`). Запрещено использовать `java.util.Date` и строковые даты в бизнес-логике.
+- **Перечисления (Enum)**: сохраняются в базу данных как строковые литералы через `@Enumerated(EnumType.STRING)`.
+- **Снепшоты данных**: в заказ сохраняются неизменяемые копии цен (`unitPrice`), названий блюд (`productNameSnapshot`) и адреса (`deliveryAddressSnapshot`), чтобы изменения в каталоге не искажали исторические заказы.
 
-Пункты со статусом **предложение** ещё не согласованы: обсудить и заменить на «принято».
+---
 
-## 1. Типы данных
+## 2. Именование и структура пакетов
+- Базовый пакет: `com.pizzaflow`
+- Модули:
+  - `com.pizzaflow.common` — базовые исключения, конфигурации, утилиты, общие DTO.
+  - `com.pizzaflow.security` — JWT аутентификация, фильтры, сервисы безопасности.
+  - `com.pizzaflow.order` — модуль заказов, клиентов, адресов и промокодов (П1).
+  - `com.pizzaflow.kitchen` — модуль меню, кухни, рецептов и склада (П2).
+  - `com.pizzaflow.delivery` — модуль доставки, курьеров, оплат и зон (П3).
+  - `com.pizzaflow.report` — модуль генерации отчётов Excel/Word на Apache POI (П3).
+- Именование таблиц: `snake_case` во множественном числе (`orders`, `order_items`, `stock_movements`).
+- Именование колонок: `snake_case` (`user_id`, `created_at`, `total_amount`).
 
-| Что | Правило |
-|---|---|
-| Идентификаторы | `Long` |
-| Деньги | только `BigDecimal`; в БД `numeric(12,2)`; округление `HALF_UP` (предложение) |
-| Время | `Instant`, хранение в UTC; в JSON ISO-8601 (`write-dates-as-timestamps: false`) |
-| Enum | `@Enumerated(EnumType.STRING)`, никогда `ORDINAL` |
-| Генерация id | `IDENTITY` (предложение) |
+---
 
-## 2. Именование
-
-- Таблицы и колонки: `snake_case`, множественное число (`orders`, `order_items`). Слово `order` зарезервировано в SQL, поэтому `orders`.
-- Пакеты: `com.pizzaflow.<модуль>`.
-- Модули (предложение): `orders`, `menu`, `delivery`, `users`.
-- Структура модуля (предложение): `controller`, `service`, `repository`, `entity`, `dto`.
-
-## 3. DTO
-
-- Входящие: `XxxRequest`, исходящие: `XxxResponse`.
-- Сущности (`@Entity`) наружу не отдаём ни в каких случаях.
-- Валидация через `jakarta.validation` на Request-классах.
-- Маппинг: MapStruct (предложение).
-
-## 4. Формат ошибки
-
-Единый ответ, обрабатывается одним `@RestControllerAdvice`:
-
+## 3. DTO и формат взаимодействия REST API
+- Сущности JPA (`@Entity`) никогда не возвращаются напрямую из контроллеров.
+- Запросы: `XxxRequest` (например, `CreateOrderRequest`, `StockMovementRequest`).
+- Ответы: `XxxResponse` (например, `OrderResponse`, `KitchenLoadResponse`).
+- Пагинация: параметры `page` (с 0), `size` (по умолчанию 10 или 20), `sort=field,asc|desc`.
+- Единый формат ответа об ошибке:
 ```json
 {
-  "timestamp": "2026-10-01T10:15:30Z",
-  "status": 404,
-  "error": "Not Found",
-  "message": "Order 42 not found",
-  "path": "/api/v1/orders/42"
+  "timestamp": "2026-10-19T00:50:00Z",
+  "status": 400,
+  "error": "Bad Request",
+  "message": "Недостаточно ингредиента 'Сыр Моцарелла' на складе: требуется 200.0, доступно 50.0",
+  "path": "/api/v1/kitchen/orders/12/start"
 }
 ```
 
-Для ошибок валидации (предложение) добавляем необязательное поле `errors`: список `{field, message}`.
+---
 
-## 5. Пагинация
-
-- Параметры: `page`, `size`, `sort=field,asc`.
-- `page` с нуля (как в Spring Data).
-- Максимальный `size`: 100 (предложение).
-- Ответ: стандартный `Page` от Spring (предложение).
-
-## 6. API (предложение)
-
-- Префикс: `/api/v1`.
-- URL: существительные во множественном числе (`/api/v1/orders`).
-- Коды ответов: `200` чтение и обновление, `201` создание, `204` удаление, `400` ошибка валидации, `404` не найдено, `409` конфликт.
-
-## 7. Git
-
-**Ветки**
-
-- `main`: только чистые, рабочие версии (сдача этапов). Прямые пуши запрещены.
-- `develop`: текущая работа, сюда пушим актуальные версии.
-- Feature-веток нет: работаем напрямую в `develop`.
-- В `main` изменения попадают из `develop` только когда версия стабильна (конец этапа или контрольная точка).
-- Перед пушем в `develop`: `git pull --rebase`, чтобы не плодить лишние merge-коммиты (предложение).
-- Версии на сдачу этапов фиксируем тегами: `stage-1`, `stage-2` (предложение).
-
-**Коммиты**: Conventional Commits, вид `type(scope): описание`.
-
-- Типы: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`.
-- Scope: имя модуля (`orders`, `menu`, `delivery`, `users`).
-- Примеры: `feat(orders): add create order endpoint`, `docs: add conventions`.
-
-## 8. Окружение (предложение)
-
-- Java: _версия_
-- Сборщик: _Maven / Gradle_
-- СУБД: PostgreSQL
-- Миграции: Flyway
-- Профили: `local`, `test`
-- Секреты: `.env` или `application-local.properties`, оба в `.gitignore`
-
-## 9. Тесты и стиль (предложение)
-
-- Тесты: JUnit 5 + Mockito; интеграционные: Testcontainers (или H2).
-- Названия тестов: `methodName_condition_expectedResult`.
-- Язык кода и коммитов: английский.
-- Форматирование: единый форматтер, отступ 4 пробела.
-- Документация API: Swagger/OpenAPI (springdoc).
+## 4. Соглашения по Git и версионированию
+- Основные ветки:
+  - `main` — стабильные релизы.
+  - `develop` — текущая интеграционная ветка.
+- Ветки задач:
+  - `feature/stage1-<module>`
+  - `feature/stage2-database`
+  - `feature/orders-pricing`
+- Формат сообщений коммитов (Conventional Commits):
+  - `feat(orders): add pricing calculation with promo discount`
+  - `feat(kitchen): implement recipe ingredient deduction with @Version lock`
+  - `feat(delivery): add FIFO courier assignment queue`
+  - `test(orders): add unit tests for state machine transitions`
+  - `fix(inventory): handle optimistic locking conflict gracefully`
+- Теги этапов: `stage-1`, `stage-2`, ..., `stage-7`.

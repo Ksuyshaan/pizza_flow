@@ -35,3 +35,12 @@ Thumbs.db
 *.class
 *.jar
 *.war
+
+
+# Local tooling and personal notes (not shared)
+.tools/
+mvnw-local.cmd
+plan.txt
+stage1.txt
+*.docx
+!src/**/*.docx

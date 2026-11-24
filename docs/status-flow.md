@@ -1,118 +1,68 @@
-# Order: модель, статусы, переходы
+# Статусная модель и переходы (Status Flow)
 
-Владелец: **Ксюша (П1)**, модуль `com.pizzaflow.orders`. Менять только по согласованию всех троих.
+## 1. Концепция единого статуса
+В PizzaFlow действует фундаментальное архитектурное правило: **главный статус жизненного цикла заказа хранится исключительно в сущности `Order`**.  
+Смежные сущности (`KitchenOrder`, `Delivery`) имеют вспомогательные локальные состояния, но синхронизируются с главным заказом **только через единую точку входа**: `OrderService.changeStatus(orderId, newStatus, actorUsername, actorRole)`.  
+Это гарантирует:
+- Невозможность рассинхронизации статусов между сервисами.
+- Гарантированную запись в журнал `StatusHistory` при любом переходе.
+- Проверку бизнес-правил и ролевых ограничений в одном централизованном месте.
 
-Пометка **решение** означает, что пункт выбран за команду, чтобы можно было начать работу. Если не согласны, замените его здесь, остальные файлы это не затронет.
+---
 
-Приложение на JavaFX, HTTP-эндпоинтов нет: экраны вызывают сервисы напрямую, а ошибки приходят исключениями и показываются в Alert.
-
-## 1. Сущности
-
-### Order
-
-| Поле | Тип | Правило |
-|---|---|---|
-| `id` | `Long` | PK |
-| `orderNumber` | `String`, unique | формат `PF-yyyyMMdd-NNNN`, номер за день растёт с `0001` |
-| `user` | связь на `User` | клиент; при заказе от имени клиента сотрудник выбирает клиента |
-| `orderType` | enum `DELIVERY` / `PICKUP` | `STRING` |
-| `status` | enum `OrderStatus` | `STRING`, стартовый `NEW` |
-| `paymentMethod` | enum `CASH` / `CARD` | добавлено из requirements.md (экран «Новый заказ») |
-| `subtotal` | `BigDecimal` `numeric(12,2)` | сумма позиций |
-| `discountAmount` | `BigDecimal` | скидка по промокоду, по умолчанию `0` |
-| `deliveryFee` | `BigDecimal` | по зоне доставки; для `PICKUP` = `0` |
-| `totalAmount` | `BigDecimal` | `subtotal - discountAmount + deliveryFee` |
-| `promoCode` | `String`, nullable | |
-| `deliveryAddress` | `String`, nullable | снимок текстом на момент заказа; для `PICKUP` = null |
-| `deliveryZone` | связь на `DeliveryZone`, nullable | для `PICKUP` = null |
-| `createdAt` | `Instant` | при создании |
-| `confirmedAt` | `Instant` | при переходе в `CONFIRMED` |
-| `completedAt` | `Instant` | при переходе в `COMPLETED` |
-| `cancelledAt` | `Instant` | при переходе в `CANCELLED` |
-
-Поля `version` у Order нет (оно только у `Ingredient`).
-
-### OrderItem (1:N к Order)
-
-`id`, `order`, `menuItemId`, `itemName` (снимок), `unitPrice` (снимок), `quantity`, `lineTotal`. Название и цену копируем в момент заказа, чтобы изменение меню не меняло старые заказы.
-
-### StatusHistory (1:N к Order)
-
-`id`, `order`, `fromStatus` (null у первой записи), `toStatus`, `changedBy` (User), `changedAt`, `comment` (например, причина отмены). Пишется только внутри `OrderService.changeStatus`; первая запись (`null → NEW`) создаётся при оформлении заказа.
-
-## 2. Расчёт суммы (в одном месте: `OrderService`)
-
-1. `subtotal` = сумма `unitPrice * quantity`. Цены берём из меню в момент создания заказа.
-2. `discountAmount` = `subtotal * percent / 100` по промокоду; нет промокода или он неактивен, значит `0`. Скидка не больше `subtotal`.
-3. `deliveryFee` = тариф зоны для `DELIVERY`, `0` для `PICKUP`.
-4. `totalAmount` = `subtotal - discountAmount + deliveryFee`.
-5. Округление `HALF_UP` до 2 знаков.
-
-Недоступную позицию меню добавить в заказ нельзя (`MenuItemUnavailableException`).
-
-## 3. Статусы и переходы
-
-`NEW`, `CONFIRMED`, `COOKING`, `READY`, `DELIVERING`, `COMPLETED`, `CANCELLED`. `COMPLETED` и `CANCELLED` конечные.
-
-| Из | В | Кто может | Условие |
-|---|---|---|---|
-| `NEW` | `CONFIRMED` | MANAGER, ADMIN | |
-| `NEW` | `CANCELLED` | CUSTOMER (только свой заказ), MANAGER, ADMIN | |
-| `CONFIRMED` | `CANCELLED` | CUSTOMER (только свой заказ), MANAGER, ADMIN | |
-| `CONFIRMED` | `COOKING` | COOK | |
-| `COOKING` | `READY` | COOK | |
-| `READY` | `DELIVERING` | COURIER | только `DELIVERY` |
-| `READY` | `COMPLETED` | MANAGER, ADMIN | только `PICKUP` |
-| `DELIVERING` | `COMPLETED` | COURIER | только `DELIVERY` |
+## 2. Диаграмма переходов состояний (State Diagram)
 
 ```mermaid
 stateDiagram-v2
-    [*] --> NEW
-    NEW --> CONFIRMED
-    NEW --> CANCELLED
-    CONFIRMED --> COOKING
-    CONFIRMED --> CANCELLED
-    COOKING --> READY
-    READY --> DELIVERING: DELIVERY
-    READY --> COMPLETED: PICKUP
-    DELIVERING --> COMPLETED
+    [*] --> NEW: Создание заказа клиентом
+
+    NEW --> CONFIRMED: Менеджер подтвердил (или авто)
+    NEW --> CANCELLED: Отмена клиентом/менеджером
+
+    CONFIRMED --> COOKING: Повар начал готовку (startCooking, списание остатков)
+    CONFIRMED --> CANCELLED: Отмена клиентом/менеджером
+
+    COOKING --> READY: Повар завершил готовку (completeCooking)
+
+    state if_delivery <<choice>>
+    READY --> if_delivery
+
+    if_delivery --> DELIVERING: DELIVERY (Курьер забрал заказ - pickup)
+    if_delivery --> COMPLETED: PICKUP (Менеджер выдал заказ клиенту)
+
+    DELIVERING --> COMPLETED: Курьер вручил заказ клиенту (completeDelivery)
+
     COMPLETED --> [*]
     CANCELLED --> [*]
 ```
 
-Всё, чего нет в таблице, запрещено.
+---
 
-**Решение:** MANAGER и ADMIN могут выполнить любой разрешённый переход вместо исполнителя (повар или курьер отсутствует; на демо весь поток можно провести одним человеком). Это одна проверка в коде, убрать её просто.
+## 3. Таблица разрешённых переходов
 
-**Решение:** подтверждение заказа ручное, `NEW → CONFIRMED` делает менеджер.
+| Исходный статус (From) | Целевой статус (To) | Условие / Тип заказа | Кто инициирует (Роль) | Бизнес-действие в системе |
+|---|---|---|---|---|
+| `NEW` | `CONFIRMED` | Любой | MANAGER, ADMIN | Менеджер принял заказ. Создаётся `KitchenOrder` со статусом `PENDING`. |
+| `NEW` | `CANCELLED` | Любой | CUSTOMER (свой заказ), MANAGER, ADMIN | Отмена до подтверждения. Промокод освобождается. |
+| `CONFIRMED` | `COOKING` | Любой | COOK, MANAGER, ADMIN | Повар нажал «Готовить». Списываются ингредиенты со склада (`StockMovement = CONSUMPTION`). |
+| `CONFIRMED` | `CANCELLED` | Любой | CUSTOMER (свой), MANAGER, ADMIN | Отмена до выпечки. Если оплачено онлайн — инициация возврата (`REFUNDED`). |
+| `COOKING` | `READY` | Любой | COOK, MANAGER, ADMIN | Повар нажал «Готово». Если `DELIVERY` — создаётся `Delivery` и запускается поиск курьера (FIFO). |
+| `READY` | `DELIVERING` | Только `DELIVERY` | COURIER (назначенный), MANAGER | Курьер забрал коробки из ресторана (`Delivery = IN_TRANSIT`). |
+| `READY` | `COMPLETED` | Только `PICKUP` | MANAGER, ADMIN | Клиент забрал заказ в пиццерии. Оплата переводится в `PAID`. |
+| `DELIVERING` | `COMPLETED` | Только `DELIVERY` | COURIER (назначенный), MANAGER | Заказ доставлен клиенту. Платёж закрыт в `PAID`, курьер освобождён. |
 
-**Решение:** после `COOKING` отмена запрещена. Ингредиенты списываются в момент `COOKING`, поэтому до него возвращать на склад нечего.
+---
 
-## 4. Как работает `OrderService.changeStatus`
+## 4. Запрещённые переходы и логика защиты
 
-Единственное место, где меняется статус. Один метод, одна транзакция, шаги по порядку:
+Все остальные комбинации переходов **строго запрещены**. При попытке выполнить недопустимый переход система генерирует контролируемое исключение:
+- **`InvalidStatusTransitionException`** (мапится в HTTP 400 Bad Request или HTTP 409 Conflict) с детальным текстом:  
+  `"Недопустимый переход статуса заказа #PF-XXXX из [COOKING] в [CANCELLED]. Причина: ингредиенты уже списаны со склада."`
 
-1. Найти заказ, иначе `OrderNotFoundException`.
-2. Проверить, что переход есть в таблице и подходит под `orderType`, иначе `InvalidStatusTransitionException`.
-3. Проверить роль (и что `CUSTOMER` отменяет свой заказ), иначе `ForbiddenActionException`.
-4. Записать новый статус и время (`confirmedAt`, `cancelledAt`, `completedAt`).
-5. Добавить запись в `StatusHistory`.
-6. Записать строку в аудит-лог (`AuditLogger`).
-7. Опубликовать `OrderStatusChangedEvent`.
-
-Любое исключение откатывает всю транзакцию. Тексты исключений на русском, они показываются в Alert, например: «Нельзя перевести заказ из статуса «Готовится» в «Новый»».
-
-## 5. Что делают соседи при смене статуса
-
-`OrderService` соседние модули не вызывает: они сами слушают событие (см. `api-contract.md`).
-
-| Новый статус | Алина (кухня) | Алия (доставка) |
-|---|---|---|
-| `CONFIRMED` | создать `KitchenOrder`, заказ появляется в очереди «Новые» | |
-| `COOKING` | списать ингредиенты по рецептам, записать повара и `startedAt` | |
-| `READY` | записать `finishedAt` | если `DELIVERY`: создать `Delivery` и назначить курьера |
-| `DELIVERING` | | доставка в статус «В пути» |
-| `COMPLETED` | | если `DELIVERY`: доставка в статус «Доставлено» |
-| `CANCELLED` | убрать `KitchenOrder` из очереди | |
-
-Если слушатель бросает исключение (например, не хватает ингредиента), статус не меняется и пользователь видит сообщение.
+### Обоснование ключевых запретов:
+1. **Запрет `COOKING -> CANCELLED`**:  
+   При переходе в `COOKING` сырье (мука, сыр, мясо) уже израсходовано и термически обработано. Автоматическая отмена клиентом невозможна, так как повлечёт прямой ущерб ресторану.
+2. **Запрет `READY -> DELIVERING` для самовывоза (`PICKUP`)**:  
+   Для самовывоза курьерская доставка не предусмотрена; заказ выдаётся непосредственно в ресторане с моментальным переходом в `COMPLETED`.
+3. **Запрет возврата назад (`COMPLETED -> READY`, `READY -> COOKING`)**:  
+   Жизненный цикл заказа является строго однонаправленным. Исправление ошибок осуществляется через ручные корректирующие проводки на складе и возвраты средств, но не откатом статуса.
